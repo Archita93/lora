@@ -1,0 +1,86 @@
+import re
+import os
+import argparse
+import pandas as pd
+from tqdm import tqdm
+from transformers import GenerationConfig
+from llama_cpp import Llama
+from utils.rudrec.rudrec_reader import create_train_test_instruct_datasets
+from utils.nerel_bio.nerel_reader import create_instruct_dataset
+from metric import extract_classes
+
+
+def main(model_path,model_name, max_new_tokens, prediction_path, data_path, max_instances):
+    model = Llama(
+        model_path=model_path,
+        n_gpu_layers = 35,
+        n_ctx=2048,
+        n_parts=1,
+        use_mmap=False,
+    )
+    generation_config = GenerationConfig.from_pretrained(model_name)
+    max_new_tokens = max_new_tokens
+    
+
+    # Load from CSV with 'text' and 'entities' columns
+    df = pd.read_csv(data_path)
+
+    # Optionally limit number of instances
+    if max_instances != -1:
+        df = df.head(max_instances)
+
+    test_dataset = []
+
+    for idx, row in df.iterrows():
+        # Build instruction prompt
+        prompt = f"Extract all named entities from the following text:\n\n{row['text']}\n\nEntities:"
+        
+        # Parse entities if stored as stringified list (e.g., "['ORG', 'LOC']")
+        try:
+            import ast
+            raw_entities = ast.literal_eval(row['entities'])
+        except:
+            raw_entities = []
+
+        test_dataset.append({
+            "id": idx,
+            "source": prompt,
+            "raw_entities": raw_entities
+        })
+
+    # Define your entity types (optional, for metrics)
+    ENTITY_TYPES = ['NAME', 'DATE', 'LOCATION', 'HOSPITAL', 'IDENTIFIER','CONTACT']  # or adapt based on your dataset
+
+    extracted_list = []
+    target_list = []
+    instruction_ids = []
+    sources = []
+    
+    for instruction in tqdm(test_dataset):
+        input_ids = model.tokenize(instruction['source'])
+        input_ids.append(model.token_eos())
+        generator = model.generate(
+                input_ids,
+                top_k=generation_config.top_k,
+                top_p=generation_config.top_p,
+                temp=generation_config.temperature,
+                repeat_penalty=generation_config.repetition_penalty,
+                reset=True,
+        )
+
+        completion_tokens = []
+        for i, token in enumerate(generator):
+            completion_tokens.append(token)
+            if token == model.token_eos() or (max_new_tokens is not None and i >= max_new_tokens):
+                break
+            
+        completion_tokens = model.detokenize(completion_tokens).decode("utf-8")
+        extracted_list.append(extract_classes(completion_tokens), ENTITY_TYPES)
+        instruction_ids.append(instruction['id'])
+        target_list.append(instruction['raw_entities'])
+    
+    pd.DataFrame({
+        'id': instruction_ids, 
+        'extracted': extracted_list,
+        'target': target_list
+    }).to_json(prediction_path)

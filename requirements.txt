@@ -1,0 +1,12 @@
+git+https://github.com/huggingface/transformers.git@main
+git+https://github.com/huggingface/peft.git@main
+corus
+wandb
+sentencepiece
+accelerate
+torch
+numba
+bitsandbytes
+pybrat
+razdel
+vllm
